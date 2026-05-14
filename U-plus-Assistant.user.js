@@ -441,6 +441,28 @@
     return selected;
   }
 
+  async function fillBlankAnswer(answers) {
+    const textareas = document.querySelectorAll('.el-textarea__inner');
+    if (textareas.length === 0) {
+      throw new Error('未找到填空题输入框');
+    }
+
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value'
+    ).set;
+
+    for (let i = 0; i < textareas.length; i++) {
+      const text = answers[i] || '';
+      nativeSetter.call(textareas[i], text);
+      textareas[i].dispatchEvent(new Event('input', { bubbles: true }));
+      textareas[i].dispatchEvent(new Event('change', { bubbles: true }));
+      logger.log(`已填入答案 ${i + 1}/${textareas.length}: ${text}`);
+      if (i < textareas.length - 1) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  }
+
   const QUESTION_TYPE_LABEL = {
     [QuestionType.SINGLE_CHOICE]: '单选题',
     [QuestionType.MULTI_CHOICE]: '多选题',
@@ -484,13 +506,14 @@
       '- 单选题，输出 {"answers": ["A"]}\n' +
       '- 多选题，输出 {"answers": ["A", "C"]}\n' +
       '- 判断题，输出 {"answers": ["true"]} 或 {"answers": ["false"]}\n' +
+      '- 填空题，输出 {"answers": ["答案"]}，答案应为题干括号中缺失的内容，只返回答案文本\n' +
       '- 只输出JSON，不要包含任何其他文字、解释或markdown代码块。';
 
-    const userMessage =
-      `题目类型：${typeLabel}\n` +
-      `题目内容：${content}\n\n` +
-      `选项：\n${optionsText}\n\n` +
-      '请作答：';
+    let userMessage = `题目类型：${typeLabel}\n题目内容：${content}\n\n`;
+    if (options.length > 0) {
+      userMessage += `选项：\n${optionsText}\n\n`;
+    }
+    userMessage += '请作答：';
 
     logger.log(`提示词已构建，类型: ${typeLabel}`);
     return [
@@ -574,7 +597,11 @@
       const data = await callDeepSeek(apiKey, messages);
       const answers = parseAIResponse(data);
 
-      await selectOptions(answers, questionType);
+      if (questionType === QuestionType.FILL_BLANK) {
+        await fillBlankAnswer(answers);
+      } else {
+        await selectOptions(answers, questionType);
+      }
       logger.log(`答题完成: ${answers.join(', ')}`);
       return answers;
     } catch (err) {
@@ -639,6 +666,8 @@
           { letter: 'true', text: '正确' },
           { letter: 'false', text: '错误' },
         ];
+      } else if (type === QuestionType.FILL_BLANK) {
+        options = [];
       } else {
         options = detectOptions();
         if (options.length === 0) {
@@ -697,6 +726,8 @@
         { letter: 'false', text: '错误' },
       ];
       logger.log('判断题，使用固定选项: true. 正确, false. 错误');
+    } else if (type === QuestionType.FILL_BLANK) {
+      options = [];
     } else {
       options = detectOptions();
       if (options.length === 0) {
