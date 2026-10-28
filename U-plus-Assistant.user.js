@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         U+助手
 // @namespace    u-plus-assistant
-// @version      0.1.0
+// @version      0.1.2
 // @description  用于U+平台的自动答题脚本
 // @author       xuanyuan
 // @license      MIT
 // @match        https://www.eduplus.net/course/workAnswer/*
-// @match        https://*.uplus.cn/*
 // @connect      api.deepseek.com
+// @connect      localhost
+// @connect      127.0.0.1
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -19,15 +20,16 @@
   'use strict';
 
   const QUESTION_TYPE_SELECTOR = '.bg-athena-primary.font-bold';
-  const QUESTION_CONTENT_SELETOR = '.ck-content.qst-html';
-  const QUESTION_OPTIONS_SELETOR = '.option-select';
+  // 旧版题干是 .ck-content.qst-html；2026-10 改版后只读预览为 .ck-content.qck-content
+  const QUESTION_CONTENT_SELETOR = '.ck-content.qst-html, .ck-content.qck-content, .qst-html, .qck-content';
+  const QUESTION_OPTIONS_SELETOR = '.option-select, .flex-row.align-center:has(.ck-content)';
 
   const QuestionType = Object.freeze({
     SINGLE_CHOICE: 0,   // 单选题
-    MULTI_CHOICE:  1,   // 多选题
-    TRUE_FALSE:    2,   // 判断题
-    FILL_BLANK:    4,   // 填空题
-    SHORT_ANSWER:  5,   // 简答题
+    MULTI_CHOICE: 1,   // 多选题
+    TRUE_FALSE: 2,   // 判断题
+    FILL_BLANK: 4,   // 填空题
+    SHORT_ANSWER: 5,   // 简答题
   });
 
   const QUESTION_TYPE_MAP = {
@@ -39,7 +41,8 @@
   };
 
   // ---- 日志面板 ----
-  let logEl, apiInput, questionGrid;
+  let logEl, apiInput, questionGrid, bankList, bankStats;
+  let bankServerUrlInput, bankApiKeyInput, bankStatusDot;
   const answeredSet = new Set();
 
   function log(level, ...args) {
@@ -102,10 +105,12 @@
     const questionTab = makeTab('题目', true);
     const logTab = makeTab('日志', false);
     const settingsTab = makeTab('设置', false);
+    const bankTab = makeTab('题库', false);
 
     tabNav.appendChild(questionTab);
     tabNav.appendChild(logTab);
     tabNav.appendChild(settingsTab);
+    tabNav.appendChild(bankTab);
 
     // ---- 日志页面 ----
     const logPage = document.createElement('div');
@@ -218,15 +223,101 @@
     autoRow.appendChild(autoToggle);
     settingsPage.appendChild(autoRow);
 
+    // ---- 题库服务器配置 ----
+    const bankServerSection = document.createElement('div');
+    bankServerSection.style.cssText = 'margin-top:16px;padding-top:12px;border-top:1px solid #45475a;';
+
+    const bankServerLabel = document.createElement('div');
+    bankServerLabel.textContent = '题库服务器';
+    bankServerLabel.style.cssText = 'color:#a6adc8;font-size:12px;margin-bottom:6px;';
+
+    const bankUrlRow = document.createElement('div');
+    bankUrlRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;';
+
+    bankServerUrlInput = document.createElement('input');
+    bankServerUrlInput.type = 'text';
+    bankServerUrlInput.placeholder = 'http://127.0.0.1:5000';
+    bankServerUrlInput.value = await GM_getValue('bank_server_url', 'http://127.0.0.1:5000');
+    bankServerUrlInput.style.cssText =
+      'flex:1;padding:6px 8px;border:1px solid #45475a;border-radius:4px;' +
+      'background:#313244;color:#cdd6f4;font-size:13px;outline:none;';
+    bankServerUrlInput.addEventListener('change', () => {
+      GM_setValue('bank_server_url', bankServerUrlInput.value);
+    });
+
+    bankStatusDot = document.createElement('span');
+    bankStatusDot.style.cssText =
+      'flex-shrink:0;width:10px;height:10px;border-radius:50%;background:#6c7086;';
+
+    const testBtn = document.createElement('button');
+    testBtn.textContent = '测试';
+    testBtn.style.cssText =
+      'flex-shrink:0;padding:4px 10px;border:1px solid #45475a;border-radius:4px;' +
+      'background:#313244;color:#cdd6f4;font-size:12px;cursor:pointer;';
+    testBtn.addEventListener('click', () => testBankConnection());
+
+    bankUrlRow.appendChild(bankServerUrlInput);
+    bankUrlRow.appendChild(bankStatusDot);
+    bankUrlRow.appendChild(testBtn);
+
+    const bankKeyRow = document.createElement('div');
+    bankKeyRow.style.cssText = 'margin-bottom:4px;';
+
+    bankApiKeyInput = document.createElement('input');
+    bankApiKeyInput.type = 'password';
+    bankApiKeyInput.placeholder = '题库 API Key（由管理员分配）';
+    bankApiKeyInput.value = await GM_getValue('bank_api_key', '');
+    bankApiKeyInput.style.cssText =
+      'width:100%;padding:6px 8px;border:1px solid #45475a;border-radius:4px;' +
+      'background:#313244;color:#cdd6f4;font-size:13px;outline:none;' +
+      'box-sizing:border-box;';
+    bankApiKeyInput.addEventListener('change', () => {
+      GM_setValue('bank_api_key', bankApiKeyInput.value);
+    });
+
+    bankKeyRow.appendChild(bankApiKeyInput);
+
+    bankServerSection.appendChild(bankServerLabel);
+    bankServerSection.appendChild(bankUrlRow);
+    bankServerSection.appendChild(bankKeyRow);
+    settingsPage.appendChild(bankServerSection);
+
+    // ---- 题库页面 ----
+    const bankPage = document.createElement('div');
+    bankPage.style.cssText = 'display:none;flex-direction:column;flex:1;min-height:0;';
+
+    // 统计栏
+    bankStats = document.createElement('div');
+    bankStats.style.cssText =
+      'padding:4px 12px;font-size:12px;color:#a6adc8;flex-shrink:0;';
+
+    // 搜索框
+    const bankSearch = document.createElement('input');
+    bankSearch.placeholder = '搜索题目...';
+    bankSearch.style.cssText =
+      'margin:4px 12px;padding:4px 8px;border:1px solid #45475a;border-radius:4px;' +
+      'background:#313244;color:#cdd6f4;font-size:12px;outline:none;flex-shrink:0;';
+    bankSearch.addEventListener('input', () => refreshBankUI(bankSearch.value));
+
+    // 条目列表
+    bankList = document.createElement('div');
+    bankList.style.cssText =
+      'flex:1;overflow-y:auto;padding:4px 12px;min-height:100px;max-height:280px;';
+
+    bankPage.appendChild(bankStats);
+    bankPage.appendChild(bankSearch);
+    bankPage.appendChild(bankList);
+
     // 选项卡切换
     const contentArea = document.createElement('div');
     contentArea.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;';
     contentArea.appendChild(logPage);
     contentArea.appendChild(questionPage);
     contentArea.appendChild(settingsPage);
+    contentArea.appendChild(bankPage);
 
-    const allPages = { log: logPage, question: questionPage, settings: settingsPage };
-    const allTabs  = { log: logTab, question: questionTab, settings: settingsTab };
+    const allPages = { log: logPage, question: questionPage, settings: settingsPage, bank: bankPage };
+    const allTabs = { log: logTab, question: questionTab, settings: settingsTab, bank: bankTab };
 
     function switchTab(active) {
       Object.values(allTabs).forEach(t => {
@@ -237,11 +328,13 @@
       allTabs[active].style.color = '#89b4fa';
       allTabs[active].style.borderBottom = '2px solid #89b4fa';
       allPages[active].style.display = '';
+      if (active === 'bank') refreshBankUI();
     }
 
     logTab.addEventListener('click', () => switchTab('log'));
     questionTab.addEventListener('click', () => switchTab('question'));
     settingsTab.addEventListener('click', () => switchTab('settings'));
+    bankTab.addEventListener('click', () => switchTab('bank'));
 
     panel.appendChild(titleBar);
     panel.appendChild(tabNav);
@@ -294,18 +387,18 @@
   }
 
   // ---- 题目序号 ----
-  function detectQuestionNumber() {
+  function detectQuestionNumber(quiet = false) {
     const el = document.querySelector(QUESTION_NUMBER_SELECTOR);
     if (!el) {
-      logger.warn('未找到题目序号');
+      if (!quiet) logger.warn('未找到题目序号');
       return null;
     }
     const num = parseInt(el.textContent.trim(), 10);
     if (isNaN(num)) {
-      logger.warn(`题目序号解析失败: ${el.textContent}`);
+      if (!quiet) logger.warn(`题目序号解析失败: ${el.textContent}`);
       return null;
     }
-    logger.log(`当前题目序号: ${num}`);
+    if (!quiet) logger.log(`当前题目序号: ${num}`);
     return num;
   }
 
@@ -376,36 +469,144 @@
     return type;
   }
 
-  function detectQuestionContent() {
+  function detectQuestionContent(quiet = false) {
     const el = document.querySelector(QUESTION_CONTENT_SELETOR);
     if (!el) {
-      logger.warn('没有找到任何题目内容');
+      if (!quiet) logger.warn('没有找到任何题目内容');
       return null;
     }
 
-    const content = el.textContent.trim();
-    logger.log(`题目内容: ${content}`);
-    return content;
+    const text = el.textContent.trim();
+    const images = extractImagesFromElement(el);
+    if (!quiet) {
+      if (images.length > 0) {
+        logger.log(`题目图片: ${images.map(i => i.filename).join(', ')}`);
+      }
+      logger.log(`题目内容: ${text || '(纯图片)'}`);
+    }
+    return { text, images, el };
   }
 
   function detectOptions() {
-    const labels = document.querySelectorAll(QUESTION_OPTIONS_SELETOR);
-    if (labels.length === 0) {
+    const containers = document.querySelectorAll(QUESTION_OPTIONS_SELETOR);
+    if (containers.length === 0) {
       logger.warn('未找到选项');
       return [];
     }
 
     const options = [];
-    labels.forEach((label) => {
-      const input = label.querySelector('.el-radio__original, .el-checkbox__original');
-      const letter = input ? input.value : '';
-      const textEl = label.querySelector('.ck-content.qst-html');
+    containers.forEach((container) => {
+      // 优先查找 radio/checkbox input（旧结构：.option-select 内）
+      const input = container.querySelector('.el-radio__original, .el-checkbox__original');
+      let letter = input ? input.value : '';
+      // 如果没有 input，从文本中提取选项字母（新结构：A、B、C、D 等）
+      if (!letter) {
+        const textNodes = [];
+        for (const node of container.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const t = node.textContent.trim();
+            if (t) textNodes.push(t);
+          }
+        }
+        // 匹配 "A、" "A." "A " 等格式
+        for (const t of textNodes) {
+          const m = t.match(/^([A-Z])[、.\s]*/);
+          if (m) { letter = m[1]; break; }
+        }
+      }
+
+      const textEl = container.querySelector(QUESTION_CONTENT_SELETOR);
       const text = textEl ? textEl.textContent.trim() : '';
-      options.push({ letter, text });
-      logger.log(`${letter}. ${text}`);
+      const images = extractImagesFromElement(textEl || container);
+      options.push({ letter, text, images });
+      if (images.length > 0) {
+        logger.log(`${letter}. ${text || '(图片选项)'} [图片: ${images.map(i => i.filename).join(', ')}]`);
+      } else {
+        logger.log(`${letter}. ${text}`);
+      }
     });
 
     return options;
+  }
+
+  // ---- 图片工具 ----
+  function getFilenameFromUrl(url) {
+    try {
+      const decoded = decodeURIComponent(url);
+      const pathname = new URL(decoded).pathname;
+      const segments = pathname.split('/').filter(Boolean);
+      return segments[segments.length - 1] || '';
+    } catch {
+      const parts = url.split('/').filter(Boolean);
+      return parts[parts.length - 1] || '';
+    }
+  }
+
+  function extractImagesFromElement(el) {
+    if (!el) return [];
+    const imgs = el.querySelectorAll('img');
+    return Array.from(imgs).map(img => ({
+      src: img.src || img.getAttribute('src') || '',
+      alt: img.alt || '',
+      filename: getFilenameFromUrl(img.src || img.getAttribute('src') || ''),
+    }));
+  }
+
+  function simpleHash(str) {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) + str.charCodeAt(i);
+      hash = hash | 0;
+    }
+    return Math.abs(hash).toString(36);
+  }
+
+  function hasImages(content, options) {
+    const qHas = content && content.images && content.images.length > 0;
+    const oHas = options && options.some(o => o.images && o.images.length > 0);
+    return qHas || oHas;
+  }
+
+  function buildOptionImagesMap(options) {
+    const map = {};
+    for (const o of options) {
+      if (o.images && o.images.length > 0) {
+        map[o.letter] = o.images;
+      }
+    }
+    return map;
+  }
+
+  function generateImageKey(questionType, questionText, questionImages, optionImagesMap) {
+    const qFiles = (questionImages || []).map(i => i.filename).filter(Boolean);
+    const oFiles = [];
+    for (const letter of Object.keys(optionImagesMap)) {
+      for (const img of optionImagesMap[letter]) {
+        if (img.filename) oFiles.push(img.filename);
+      }
+    }
+    const allFiles = [...qFiles, ...oFiles].sort();
+    const imagePart = allFiles.join('|');
+
+    let textPart = '';
+    if (questionText && questionText.trim().length > 0) {
+      const normalized = questionText.trim().slice(0, 128);
+      textPart = '_' + simpleHash(normalized);
+    }
+
+    if (!imagePart && !textPart) return null;
+    return `${questionType}_${imagePart}${textPart}`;
+  }
+
+  // 页面保存/刷新时会短暂卸载表单，点击/填框前先等元素出现
+  async function waitForNodes(selector, timeout = 3000) {
+    const start = Date.now();
+    let nodes = document.querySelectorAll(selector);
+    while (nodes.length === 0 && Date.now() - start < timeout) {
+      await new Promise(r => setTimeout(r, 100));
+      nodes = document.querySelectorAll(selector);
+    }
+    return nodes;
   }
 
   async function selectOptions(answers, questionType) {
@@ -425,16 +626,52 @@
     const selected = [];
 
     for (const letter of answers) {
-      const input = document.querySelector(`${inputSelector}[value="${letter}"]`);
-      if (!input) {
+      // 方法 1: 通过 radio/checkbox input value 查找（旧结构）
+      let input = (await waitForNodes(`${inputSelector}[value="${letter}"]`))[0];
+      if (input) {
+        input.click();
+        selected.push(letter);
+        if (isMulti) await delay(50);
+        continue;
+      }
+
+      // 方法 2: 在新结构 .flex-row.align-center 中按字母匹配并点击
+      const containers = await waitForNodes('.flex-row.align-center:has(.ck-content)');
+      let clicked = false;
+      for (const container of containers) {
+        // 从文本节点提取字母
+        for (const node of container.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const m = node.textContent.trim().match(/^([A-Z])[、.\s]*/);
+            if (m && m[1] === letter) {
+              // 优先点击可能存在的隐藏 input，否则点击整个容器
+              const hiddenInput = container.querySelector('input[type="radio"], input[type="checkbox"]');
+              if (hiddenInput) {
+                hiddenInput.click();
+              } else {
+                container.click();
+              }
+              selected.push(letter);
+              clicked = true;
+              break;
+            }
+          }
+        }
+        if (clicked) break;
+      }
+
+      if (!clicked) {
         logger.warn(`未找到选项: ${letter}`);
         continue;
       }
-      input.click();
-      selected.push(letter);
+
       if (isMulti) {
         await delay(50);
       }
+    }
+
+    if (selected.length === 0) {
+      throw new Error(`未找到任何选项: ${answers.join(', ')}`);
     }
 
     logger.log(`已选择: ${selected.join(', ')}`);
@@ -442,7 +679,7 @@
   }
 
   async function fillBlankAnswer(answers) {
-    const textareas = document.querySelectorAll('.el-textarea__inner');
+    const textareas = await waitForNodes('.el-textarea__inner', 5000);
     if (textareas.length === 0) {
       throw new Error('未找到填空题输入框');
     }
@@ -498,6 +735,7 @@
   // 构建发送给 AI 的提示词
   function buildPrompt(questionType, content, options) {
     const typeLabel = QUESTION_TYPE_LABEL[questionType] || '未知类型';
+    const contentText = typeof content === 'string' ? content : (content?.text || '');
     const optionsText = options.map(o => `${o.letter}. ${o.text}`).join('\n');
 
     const systemMessage =
@@ -509,9 +747,18 @@
       '- 填空题，输出 {"answers": ["答案"]}，答案应为题干括号中缺失的内容，只返回答案文本\n' +
       '- 只输出JSON，不要包含任何其他文字、解释或markdown代码块。';
 
-    let userMessage = `题目类型：${typeLabel}\n题目内容：${content}\n\n`;
+    let userMessage = `题目类型：${typeLabel}\n`;
+    // 图片提示
+    if (content?.images?.length) {
+      userMessage += `[题目包含图片: ${content.images.map(i => i.filename).join(', ')}]\n`;
+    }
+    userMessage += `题目内容：${contentText || '(纯图片题，无文本)'}\n\n`;
     if (options.length > 0) {
       userMessage += `选项：\n${optionsText}\n\n`;
+      const optsWithImgs = options.filter(o => o.images?.length);
+      if (optsWithImgs.length) {
+        userMessage += `[含图片的选项: ${optsWithImgs.map(o => o.letter).join(', ')}]\n`;
+      }
     }
     userMessage += '请作答：';
 
@@ -578,8 +825,147 @@
     return result.answers;
   }
 
-  // 解题入口：获取题目 → 调 AI → 选选项
+  // ---- 题库 API 调用 ----
+  function getBankConfig() {
+    const url = (bankServerUrlInput?.value || '').trim().replace(/\/+$/, '');
+    const key = (bankApiKeyInput?.value || '').trim();
+    return { url, key };
+  }
+
+  async function bankFetch(path, options = {}) {
+    const { url, key } = getBankConfig();
+    if (!url) throw new Error('未配置题库服务器地址');
+
+    const headers = options.headers || {};
+    if (key) headers['X-API-Key'] = key;
+    if (options.json !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const resp = await gmFetch(`${url}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.json !== undefined ? JSON.stringify(options.json) : undefined,
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`题库 API 错误 (${resp.status}): ${text}`);
+    }
+    return resp.json();
+  }
+
+  async function testBankConnection() {
+    try {
+      await bankFetch('/api/health');
+      if (bankStatusDot) {
+        bankStatusDot.style.background = '#a6e3a1';
+        bankStatusDot.title = '已连接';
+      }
+      logger.log('题库服务器连接成功');
+      return true;
+    } catch (e) {
+      if (bankStatusDot) {
+        bankStatusDot.style.background = '#f38ba8';
+        bankStatusDot.title = '连接失败';
+      }
+      logger.error(`题库服务器连接失败: ${e.message}`);
+      return false;
+    }
+  }
+
+  async function getBankStats() {
+    return await bankFetch('/api/bank/stats');
+  }
+
+  async function lookupInBank(key) {
+    const data = await bankFetch(`/api/bank/lookup?key=${encodeURIComponent(key)}`);
+    return data;  // entry object or null
+  }
+
+  async function searchBank(query, limit = 50) {
+    return await bankFetch('/api/bank/search', {
+      method: 'POST',
+      json: { query, limit },
+    });
+  }
+
+  async function bankCreateEntry(entry) {
+    const { url, key: apiKey } = getBankConfig();
+    if (!url || !apiKey) return;
+    try {
+      await bankFetch('/api/bank/entries', {
+        method: 'POST',
+        json: entry,
+      });
+      logger.log(`题目已上传题库 (key=${entry.key}, status=${entry.answers?.length ? 'solved' : 'unsolved'})`);
+    } catch (e) {
+      logger.warn(`上传题库失败: ${e.message}`);
+    }
+  }
+
+  // 生成题库 Key（通用，支持文本题和图片题）
+  function generateBankKey(questionType, content, options) {
+    if (hasImages(content, options)) {
+      return generateImageKey(
+        questionType,
+        content?.text || '',
+        content?.images || [],
+        buildOptionImagesMap(options)
+      );
+    }
+    // 纯文本题：type + 前128字符hash
+    const text = (content?.text || '').trim().slice(0, 128);
+    if (!text) return null;
+    return `${questionType}_${simpleHash(text)}`;
+  }
+
+  // 应用答案（提取为独立函数，供 AI 和题库路径共用）
+  async function applyAnswer(questionType, answers) {
+    if (questionType === QuestionType.FILL_BLANK) {
+      await fillBlankAnswer(answers);
+    } else {
+      await selectOptions(answers, questionType);
+    }
+  }
+
+  // 解题入口：获取题目 → 查题库 / 调 AI → 选选项
   async function solveQuestion(questionType, content, options) {
+    const bankKey = generateBankKey(questionType, content, options);
+
+    // ---- 查找题库 ----
+    if (bankKey) {
+      try {
+        const bankResult = await lookupInBank(bankKey);
+        if (bankResult) {
+          logger.log(`题库命中 (key=${bankKey}), 答案: [${bankResult.answers.join(', ')}]`);
+          await applyAnswer(questionType, bankResult.answers);
+          return bankResult.answers;
+        }
+        logger.log(`题库未命中 (key=${bankKey})`);
+      } catch (e) {
+        logger.warn(`题库查询失败: ${e.message}`);
+      }
+    }
+
+    // ---- 纯图片题, 题库未命中 → 无法用 AI ----
+    if (hasImages(content, options) && !(content?.text?.trim())) {
+      logger.warn('纯图片题目且题库未命中，AI 无法处理，跳过');
+      // 自动入库（未解出）
+      if (bankKey) {
+        bankCreateEntry({
+          key: bankKey,
+          type: questionType,
+          question: content?.text || '',
+          qImages: content?.images || [],
+          options: options.map(o => ({ letter: o.letter, text: o.text })),
+          answers: [],
+        });
+      }
+      return null;
+    }
+
+    // ---- AI 流程 ----
     const apiKey = apiInput?.value?.trim();
     if (!apiKey) {
       logger.warn('未设置 DeepSeek API Key，请在设置选项卡中填写');
@@ -597,16 +983,103 @@
       const data = await callDeepSeek(apiKey, messages);
       const answers = parseAIResponse(data);
 
-      if (questionType === QuestionType.FILL_BLANK) {
-        await fillBlankAnswer(answers);
-      } else {
-        await selectOptions(answers, questionType);
-      }
+      await applyAnswer(questionType, answers);
       logger.log(`答题完成: ${answers.join(', ')}`);
+
+      // 自动上传题库（已解出，带 AI 答案）
+      if (bankKey) {
+        bankCreateEntry({
+          key: bankKey,
+          type: questionType,
+          question: content?.text || '',
+          qImages: content?.images || [],
+          options: options.map(o => ({ letter: o.letter, text: o.text })),
+          answers: answers,
+        });
+      }
+
       return answers;
     } catch (err) {
       logger.error(err.message);
       return null;
+    }
+  }
+
+  // 刷新题库 UI（异步，从服务器拉取数据）
+  async function refreshBankUI(filterText) {
+    if (!bankList || !bankStats) return;
+
+    try {
+      const stats = await getBankStats();
+      const typeLabels = Object.entries(stats.byType || {})
+        .map(([t, c]) => `${QUESTION_TYPE_LABEL[+t] || '类型' + t}×${c}`)
+        .join('  ');
+      bankStats.textContent = `总条目: ${stats.total}  ${typeLabels}`;
+
+      const results = await searchBank(filterText || '', 100);
+
+      bankList.innerHTML = '';
+      if (!results || results.length === 0) {
+        bankList.innerHTML =
+          '<div style="color:#6c7086;text-align:center;padding:16px;">暂无题目</div>';
+        return;
+      }
+
+      for (const entry of results) {
+        const row = document.createElement('div');
+        row.style.cssText =
+          'display:flex;align-items:center;gap:6px;padding:6px 4px;' +
+          'border-bottom:1px solid #313244;font-size:12px;';
+
+        // 题型标签
+        const badge = document.createElement('span');
+        const typeLabel = QUESTION_TYPE_LABEL[entry.type] || '未知';
+        badge.textContent = typeLabel;
+        badge.style.cssText =
+          'flex-shrink:0;padding:1px 4px;border-radius:3px;' +
+          'background:#89b4fa33;color:#89b4fa;font-size:11px;';
+
+        // 文本预览
+        const preview = document.createElement('span');
+        const imgFlag = (entry.qImages?.length) ? ' \u{1F5BC}' : '';
+        preview.textContent = (entry.question || '(纯图片题)').slice(0, 30) + imgFlag;
+        preview.style.cssText =
+          'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cdd6f4;';
+
+        // 答案
+        const answerBadge = document.createElement('span');
+        answerBadge.textContent = (entry.answers || []).join(',');
+        answerBadge.style.cssText =
+          'flex-shrink:0;color:#a6e3a1;font-weight:bold;min-width:24px;text-align:center;';
+
+        // 使用次数
+        if (entry.used > 0) {
+          const usedBadge = document.createElement('span');
+          usedBadge.textContent = `×${entry.used}`;
+          usedBadge.style.cssText = 'flex-shrink:0;color:#6c7086;font-size:10px;';
+          row.appendChild(badge);
+          row.appendChild(preview);
+          row.appendChild(answerBadge);
+          row.appendChild(usedBadge);
+        } else {
+          row.appendChild(badge);
+          row.appendChild(preview);
+          row.appendChild(answerBadge);
+        }
+
+        bankList.appendChild(row);
+      }
+    } catch (e) {
+      bankStats.textContent = '服务器连接失败';
+      bankList.innerHTML = '';
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'color:#f38ba8;text-align:center;padding:16px;';
+      errDiv.appendChild(document.createTextNode('无法连接题库服务器'));
+      const small = document.createElement('small');
+      small.textContent = e.message;
+      errDiv.appendChild(document.createElement('br'));
+      errDiv.appendChild(small);
+      bankList.appendChild(errDiv);
     }
   }
 
@@ -621,12 +1094,23 @@
     return null;
   }
 
-  // 等待题目切换
-  async function waitForNextQuestion(prevNum, timeout = 15000) {
+  // 等待题目切换：序号会先变，题干/选项是异步渲染的，必须等题干也换了再读
+  async function waitForNextQuestion(prevNum, prevText = '', timeout = 15000) {
     const start = Date.now();
+    let numChangedAt = 0;
     while (Date.now() - start < timeout) {
-      const num = detectQuestionNumber();
-      if (num !== null && num !== prevNum) return true;
+      const num = detectQuestionNumber(true);
+      if (num !== null && num !== prevNum) {
+        if (!numChangedAt) numChangedAt = Date.now();
+        const content = detectQuestionContent(true);
+        const text = content ? content.text : '';
+        if (text && text !== prevText) {
+          await new Promise(r => setTimeout(r, 300)); // 等选项/表单一起渲染完
+          return true;
+        }
+        // 极端情况：前后题干完全相同，最多再等 8 秒就继续
+        if (Date.now() - numChangedAt > 8000) return true;
+      }
       await new Promise(r => setTimeout(r, 200));
     }
     logger.warn('等待题目切换超时');
@@ -655,16 +1139,13 @@
 
       const type = detectQuestionTypes();
       const content = detectQuestionContent();
+      let options = null;
       if (type === null || content === null) {
         logger.warn('题目信息不完整，跳过');
-        continue;
-      }
-
-      let options;
-      if (type === QuestionType.TRUE_FALSE) {
+      } else if (type === QuestionType.TRUE_FALSE) {
         options = [
-          { letter: 'true', text: '正确' },
-          { letter: 'false', text: '错误' },
+          { letter: 'true', text: '正确', images: [] },
+          { letter: 'false', text: '错误', images: [] },
         ];
       } else if (type === QuestionType.FILL_BLANK) {
         options = [];
@@ -672,13 +1153,16 @@
         options = detectOptions();
         if (options.length === 0) {
           logger.warn(`第 ${currentNum} 题未找到选项，跳过`);
-          continue;
+          options = null;
         }
       }
 
-      const result = await solveQuestion(type, content, options);
-      if (result) {
-        markAnswered(currentNum);
+      // 跳过时 options 为 null，但仍要切下一题，否则会一直重复处理当前题
+      if (options) {
+        const result = await solveQuestion(type, content, options);
+        if (result) {
+          markAnswered(currentNum);
+        }
       }
 
       // 最后一题
@@ -687,15 +1171,18 @@
         break;
       }
 
-      // 等待 500ms 后点击下一题
-      await new Promise(r => setTimeout(r, 500));
+      // 等页面保存完答案再切题，避免下一题在渲染中途被读到
+      await new Promise(r => setTimeout(r, 800));
       const nextBtn = findNextButton();
       if (!nextBtn) {
         logger.warn('未找到下一题按钮，停止作答');
         break;
       }
       nextBtn.click();
-      await waitForNextQuestion(currentNum);
+      if (!await waitForNextQuestion(currentNum, content ? content.text : '')) {
+        logger.warn('题目没有切换，停止作答');
+        break;
+      }
     }
   }
 
@@ -722,8 +1209,8 @@
     let options;
     if (type === QuestionType.TRUE_FALSE) {
       options = [
-        { letter: 'true', text: '正确' },
-        { letter: 'false', text: '错误' },
+        { letter: 'true', text: '正确', images: [] },
+        { letter: 'false', text: '错误', images: [] },
       ];
       logger.log('判断题，使用固定选项: true. 正确, false. 错误');
     } else if (type === QuestionType.FILL_BLANK) {
@@ -751,8 +1238,9 @@
     const start = Date.now();
     while (Date.now() - start < timeout) {
       const typeEl = document.querySelector(QUESTION_TYPE_SELECTOR);
+      const contentEl = document.querySelector(QUESTION_CONTENT_SELETOR);
       const listEl = document.querySelector(QUESTION_LIST_SELECTOR);
-      if (typeEl?.textContent.trim() && listEl?.querySelector('[class*="scale-x-80"]')) {
+      if (typeEl?.textContent.trim() && contentEl && listEl?.querySelector('[class*="scale-x-80"]')) {
         logger.log('页面就绪');
         return true;
       }
@@ -778,5 +1266,9 @@
     autoAnswer, findNextButton, waitForNextQuestion,
     QuestionType, logger,
     get apiKey() { return apiInput?.value ?? ''; },
+    // 题库（服务器 API）
+    bankFetch, testBankConnection, getBankStats, lookupInBank, searchBank,
+    extractImagesFromElement, generateImageKey, hasImages,
+    refreshBankUI,
   };
 })();
