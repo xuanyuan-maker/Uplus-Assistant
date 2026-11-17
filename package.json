@@ -1,0 +1,20 @@
+{
+  "name": "uplus-assistant",
+  "version": "0.1.9",
+  "private": true,
+  "type": "module",
+  "description": "U+ platform assistant userscript for ScriptCat",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/build.js --watch",
+    "test": "npm run build && node --test tests/*.test.js",
+    "test:browser": "npm run build && node scripts/test-browser.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Uplus Assistant browser regression checks</title>
+<div id="fixture"></div>
+<pre id="result">RUNNING</pre>
+<script>
+  const storage = new Map([['deepseek_api_key', 'test-key'], ['auto_answer', false]]);
+  storage.set('jev_api_key', 'stored-jev-key');
+  storage.set('jev_openrouter_api_key', 'stored-openrouter-key');
+  if (location.hash === '#auto-submit-on') storage.set('auto_submit', true);
+  if (location.hash === '#use-jev-on') storage.set('use_jev', true);
+  if (location.hash === '#openrouter-on') {
+    storage.set('use_jev', true);
+    storage.set('jev_provider', 'openrouter');
+  }
+  const storageReads = [];
+  const requests = [];
+  let apiAnswers = ['A'];
+  let apiStatus = 200;
+  let jevUncertain = false;
+  window.unsafeWindow = window;
+  window.GM_getValue = async (key, fallback) => {
+    storageReads.push(key);
+    return storage.has(key) ? storage.get(key) : fallback;
+  };
+  window.GM_setValue = (key, value) => storage.set(key, value);
+  window.GM_xmlhttpRequest = options => {
+    requests.push(options);
+    let response;
+    if (options.url === 'https://api.deepseek.com/chat/completions') {
+      response = { choices: [{ message: { content: JSON.stringify({ answers: apiAnswers }) } }] };
+    } else if (['https://api.typesafe.ai/v1/systemone', 'https://openrouter.ai/api/alpha/decisions'].includes(options.url)) {
+      const body = JSON.parse(options.data);
+      response = { model: 'jev-1.14.0', answers: {} };
+      if (options.url === 'https://openrouter.ai/api/alpha/decisions') {
+        response.model = 'typesafe/jev-1.14';
+        response.provider = 'TypeSafe';
+        response.id = 'test-decision';
+      }
+      for (const [id, question] of Object.entries(body.questions)) {
+        if (question.type === 'choice') {
+          response.answers[id] = { type: 'choice', choice: apiAnswers[0], confidence: jevUncertain ? 0.1 : 0.95 };
+        } else {
+          const selected = id === 'answer' ? apiAnswers.includes('true') : apiAnswers.includes(id.slice('option_'.length).toUpperCase());
+          response.answers[id] = { type: 'noul', noul: jevUncertain ? 0.5 : selected ? 0.99 : 0.01 };
+        }
+      }
+    } else {
+      throw new Error(`Unexpected network request: ${options.url}`);
+    }
+    queueMicrotask(() => options.onload({
+      status: apiStatus,
+      responseText: JSON.stringify(response),
+    }));
+  };
+</script>
+<script src="../U-plus-Assistant.user.js"></script>
+<script src="browser-check.js"></script>

@@ -1,9 +1,7 @@
-# 题库服务器 — 不公开
-bank-server/
+# Dependencies
+node_modules/
 
-# 临时文件
-temp
-
-# Python
-__pycache__/
-*.pyc
+# Local configuration
+.env
+.env.*
+!.env.example
