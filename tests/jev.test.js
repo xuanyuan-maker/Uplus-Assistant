@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
-import { buildJevRequest, callJev, parseJevResponse } from '../src/jev.js';
+import { buildJevRequest, callJev, parseJevResponse, JevUncertainError } from '../src/jev.js';
 import { QuestionType } from '../src/questions.js';
 import { logger } from '../src/logger.js';
 
@@ -93,6 +93,20 @@ test('collects every reliable multi-choice answer and rejects partial or uncerta
   oneAnswer.answers.option_c = noul(0.1);
   assert.throws(() => parseJevResponse(oneAnswer, 1, options), /至少两个/);
   assert.throws(() => parseJevResponse({}, 5, []), /不支持/);
+});
+
+test('distinguishes uncertain answers from invalid responses for DeepSeek fallback', () => {
+  assert.throws(() => parseJevResponse({ answers: { answer: { type: 'choice', choice: 'A', confidence: 0.5 } } }, 0, options), JevUncertainError);
+  assert.throws(() => parseJevResponse({ answers: { answer: noul(0.5) } }, 2, []), JevUncertainError);
+  const uncertain = multiReply();
+  uncertain.answers.option_d = noul(0.5);
+  assert.throws(() => parseJevResponse(uncertain, 1, options), JevUncertainError);
+  const incomplete = multiReply();
+  incomplete.answers.option_c = noul(0.1);
+  assert.throws(() => parseJevResponse(incomplete, 1, options), JevUncertainError);
+  for (const [data, type] of [[{}, 0], [{ answers: { answer: noul('0.5') } }, 2]]) {
+    assert.throws(() => parseJevResponse(data, type, options), error => error instanceof Error && !(error instanceof JevUncertainError));
+  }
 });
 
 test('sends JeV credentials and text payload only to the official endpoint without vision headers', async t => {

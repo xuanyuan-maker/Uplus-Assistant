@@ -257,7 +257,7 @@ export async function createPanel() {
 
   useJevCheckbox = await addToggle('选择题使用 JeV', 'use_jev');
   const jevHint = document.createElement('div');
-  jevHint.textContent = '仅纯文本单选、多选、判断题使用 JeV；图片题及其他题型使用 DeepSeek Flash High。';
+  jevHint.textContent = '纯文本单选、多选、判断优先 JeV；置信度不足、图片题及其他题型使用 DeepSeek Flash High。';
   jevHint.style.cssText = 'margin-top:6px;color:#a6adc8;font-size:12px;';
   settingsPage.appendChild(jevHint);
 

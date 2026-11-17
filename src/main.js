@@ -3,7 +3,7 @@ import { QuestionType, QUESTION_TYPE_LABEL, detectQuestionList, detectQuestionNu
   hasImages, findNextButton, waitForNextQuestion, waitForReady } from './questions.js';
 import { selectOptions, applyAnswer } from './answers.js';
 import { buildPrompt, callDeepSeek, parseAIResponse } from './api.js';
-import { buildJevRequest, callJev, parseJevResponse } from './jev.js';
+import { buildJevRequest, callJev, parseJevResponse, JevUncertainError } from './jev.js';
 import { createPanel, getApiKey, getJevApiKey, getJevProvider, getUseJev, buildAnswerSheet, markAnswered, getAnswered, isAnswered } from './ui.js';
 import { logger } from './logger.js';
 import { submitHomework } from './submission.js';
@@ -29,10 +29,18 @@ async function solveQuestion(questionType, content, options) {
     if (useJev) {
       const request = buildJevRequest(questionType, content, options);
       const data = await callJev(apiKey, request, jevProvider);
-      answers = parseJevResponse(data, questionType, options);
-    } else {
+      try {
+        answers = parseJevResponse(data, questionType, options);
+      } catch (error) {
+        if (!(error instanceof JevUncertainError)) throw error;
+        logger.warn(`${error.message}，改由 DeepSeek Flash High 作答`);
+      }
+    }
+    if (!answers) {
+      const deepSeekKey = useJev ? getApiKey().trim() : apiKey;
+      if (!deepSeekKey) throw new Error('未设置 DeepSeek API Key，无法接管 JeV 不确定的题目，请在设置中填写');
       const messages = buildPrompt(questionType, content, options);
-      const data = await callDeepSeek(apiKey, messages);
+      const data = await callDeepSeek(deepSeekKey, messages);
       answers = parseAIResponse(data);
     }
 

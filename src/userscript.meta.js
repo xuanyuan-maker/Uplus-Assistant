@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         U+助手
 // @namespace    u-plus-assistant
-// @version      0.1.9
+// @version      0.1.10
 // @description  用于U+平台的自动答题脚本
 // @author       xuanyuan
 // @license      MIT

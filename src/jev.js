@@ -8,6 +8,8 @@ const OPENROUTER_JEV_API_URL = 'https://openrouter.ai/api/alpha/decisions';
 const YES_THRESHOLD = 0.7;
 const NO_THRESHOLD = 0.3;
 
+export class JevUncertainError extends Error {}
+
 export function buildJevRequest(questionType, content, options) {
   if (![QuestionType.SINGLE_CHOICE, QuestionType.MULTI_CHOICE, QuestionType.TRUE_FALSE].includes(questionType)) {
     throw new Error('JeV 仅用于单选、多选和判断题');
@@ -67,7 +69,7 @@ function readNoul(answer) {
   }
   if (probability >= YES_THRESHOLD) return true;
   if (probability <= NO_THRESHOLD) return false;
-  throw new Error(`JeV 判断不确定 (${probability})，本题跳过`);
+  throw new JevUncertainError(`JeV 判断不确定 (${probability})`);
 }
 
 export function parseJevResponse(data, questionType, options) {
@@ -78,13 +80,13 @@ export function parseJevResponse(data, questionType, options) {
       !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1) {
       throw new Error('JeV 返回的单选答案或置信度无效');
     }
-    if (answer.confidence < YES_THRESHOLD) throw new Error(`JeV 单选置信度不足 (${answer.confidence})，本题跳过`);
+    if (answer.confidence < YES_THRESHOLD) throw new JevUncertainError(`JeV 单选置信度不足 (${answer.confidence})`);
     answers = [answer.choice];
   } else if (questionType === QuestionType.TRUE_FALSE) {
     answers = [readNoul(data?.answers?.answer) ? 'true' : 'false'];
   } else if (questionType === QuestionType.MULTI_CHOICE) {
     answers = options.filter(option => readNoul(data?.answers?.[`option_${option.letter.toLowerCase()}`])).map(option => option.letter);
-    if (answers.length < 2) throw new Error('JeV 未返回至少两个可靠的多选答案，本题跳过');
+    if (answers.length < 2) throw new JevUncertainError('JeV 未返回至少两个可靠的多选答案');
   } else {
     throw new Error('JeV 不支持此题型');
   }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         U+助手
 // @namespace    u-plus-assistant
-// @version      0.1.9
+// @version      0.1.10
 // @description  用于U+平台的自动答题脚本
 // @author       xuanyuan
 // @license      MIT
@@ -488,6 +488,8 @@ ${optionsText}
   var OPENROUTER_JEV_API_URL = "https://openrouter.ai/api/alpha/decisions";
   var YES_THRESHOLD = 0.7;
   var NO_THRESHOLD = 0.3;
+  var JevUncertainError = class extends Error {
+  };
   function buildJevRequest(questionType, content, options) {
     if (![QuestionType.SINGLE_CHOICE, QuestionType.MULTI_CHOICE, QuestionType.TRUE_FALSE].includes(questionType)) {
       throw new Error("JeV 仅用于单选、多选和判断题");
@@ -543,7 +545,7 @@ ${optionsText}
     }
     if (probability >= YES_THRESHOLD) return true;
     if (probability <= NO_THRESHOLD) return false;
-    throw new Error(`JeV 判断不确定 (${probability})，本题跳过`);
+    throw new JevUncertainError(`JeV 判断不确定 (${probability})`);
   }
   function parseJevResponse(data, questionType, options) {
     let answers;
@@ -552,13 +554,13 @@ ${optionsText}
       if (answer?.type !== "choice" || !options.some((option) => option.letter === answer.choice) || !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1) {
         throw new Error("JeV 返回的单选答案或置信度无效");
       }
-      if (answer.confidence < YES_THRESHOLD) throw new Error(`JeV 单选置信度不足 (${answer.confidence})，本题跳过`);
+      if (answer.confidence < YES_THRESHOLD) throw new JevUncertainError(`JeV 单选置信度不足 (${answer.confidence})`);
       answers = [answer.choice];
     } else if (questionType === QuestionType.TRUE_FALSE) {
       answers = [readNoul(data?.answers?.answer) ? "true" : "false"];
     } else if (questionType === QuestionType.MULTI_CHOICE) {
       answers = options.filter((option) => readNoul(data?.answers?.[`option_${option.letter.toLowerCase()}`])).map((option) => option.letter);
-      if (answers.length < 2) throw new Error("JeV 未返回至少两个可靠的多选答案，本题跳过");
+      if (answers.length < 2) throw new JevUncertainError("JeV 未返回至少两个可靠的多选答案");
     } else {
       throw new Error("JeV 不支持此题型");
     }
@@ -759,7 +761,7 @@ ${optionsText}
     }
     useJevCheckbox = await addToggle("选择题使用 JeV", "use_jev");
     const jevHint = document.createElement("div");
-    jevHint.textContent = "仅纯文本单选、多选、判断题使用 JeV；图片题及其他题型使用 DeepSeek Flash High。";
+    jevHint.textContent = "纯文本单选、多选、判断优先 JeV；置信度不足、图片题及其他题型使用 DeepSeek Flash High。";
     jevHint.style.cssText = "margin-top:6px;color:#a6adc8;font-size:12px;";
     settingsPage.appendChild(jevHint);
     autoSubmitCheckbox = await addToggle("自动提交", "auto_submit");
@@ -915,10 +917,18 @@ ${optionsText}
       if (useJev) {
         const request = buildJevRequest(questionType, content, options);
         const data = await callJev(apiKey, request, jevProvider);
-        answers = parseJevResponse(data, questionType, options);
-      } else {
+        try {
+          answers = parseJevResponse(data, questionType, options);
+        } catch (error) {
+          if (!(error instanceof JevUncertainError)) throw error;
+          logger.warn(`${error.message}，改由 DeepSeek Flash High 作答`);
+        }
+      }
+      if (!answers) {
+        const deepSeekKey = useJev ? getApiKey().trim() : apiKey;
+        if (!deepSeekKey) throw new Error("未设置 DeepSeek API Key，无法接管 JeV 不确定的题目，请在设置中填写");
         const messages = buildPrompt(questionType, content, options);
-        const data = await callDeepSeek(apiKey, messages);
+        const data = await callDeepSeek(deepSeekKey, messages);
         answers = parseAIResponse(data);
       }
       await applyAnswer(questionType, answers);

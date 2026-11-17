@@ -4,7 +4,7 @@
 
 ## 版本
 
-v0.1.9
+v0.1.10
 
 ## 功能
 
@@ -21,7 +21,7 @@ v0.1.9
 
 - DeepSeek 始终使用 Flash High（`model: 'deepseek-flash'`、`reasoning_effort: 'high'`），使用 API 默认输出预算，请求超时为 180 秒；参见 [DeepSeek 思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/)。图片按题干、选项分组发送，支持 JPEG、PNG、GIF、WebP；参见 [DeepSeek 图片输入文档](https://api-docs.deepseek.com/guides/vision/)。
 - DeepSeek 图片题使用原图 URL，必须能公开访问；也支持 Base64 图片。需要登录、防盗链或 `blob:` 图片暂不支持，失败时会记录错误。
-- JeV 使用 `jev-latest` 官方接口：单选用 Choice，判断用 Noul，多选将每个选项作为 Noul 在一次请求中判断。单选置信度至少 0.7；判断和多选的概率至少 0.7 视为是，至多 0.3 视为否，中间值跳过。阈值尚未按本项目题目校准；多选不足两个可靠答案也会跳过。缺少 JeV Key、接口错误或结果不确定时不会自动改调 DeepSeek。参见 [JeV API 文档](https://docs.typesafe.ai/api/system-one)。
+- JeV 单选用 Choice，判断用 Noul，多选将每个选项作为 Noul 在一次请求中判断。单选置信度至少 0.7；判断和多选的概率至少 0.7 视为是，至多 0.3 视为否。单选置信度不足、任一判断概率处于中间区间，或多选不足两个可靠答案时，自动将完整题目交给 DeepSeek Flash High 重新作答，不跳过。两个 JeV 渠道均适用，需同时填写 DeepSeek API Key。阈值尚未按本项目题目校准；缺少 Key、接口错误或返回格式无效时仍记录错误，不强行填答。参见 [JeV API 文档](https://docs.typesafe.ai/api/system-one)。
 - TypeSafe 使用 `https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`；OpenRouter 使用 `https://openrouter.ai/api/alpha/decisions`，模型 `~typesafe/jev-latest`。两者复用结构化答案解析，Key 只发送到当前选择的渠道，失败时不自动换渠道。参见 [OpenRouter JeV 接入说明](https://openrouter.ai/blog/tutorials/how-to-use-jev/)。
 - 无论 JeV 开关是否开启，只要题干或任一选项含图片，整道题（文字和图片）都交给 DeepSeek Flash High，不向 JeV 发送图片。
 - 已移除题库服务、题库设置、查询与答案上传

@@ -417,11 +417,15 @@
       !app.isAnswered(41) && failedJevSubmit.opened === 0, 'JeV failure fell back to DeepSeek or submitted');
     apiStatus = 200;
     jevUncertain = true;
+    apiAnswers = ['A', 'C'];
     question(42, '多选题', choices('checkbox', ['A', 'B', 'C']));
     const uncertainSubmit = submissionControls();
+    const uncertainStart = requests.length;
     await app.detectAll();
-    check(!app.isAnswered(42) && !document.querySelector('#fixture input:checked') && uncertainSubmit.opened === 0,
-      'uncertain JeV results were applied or submitted');
+    check(app.isAnswered(42) && document.querySelector('input[value="A"]').checked && document.querySelector('input[value="C"]').checked &&
+      uncertainSubmit.confirmed === 1, 'DeepSeek fallback did not complete or submit the uncertain JeV question');
+    check(requests.length === uncertainStart + 2 && requests[uncertainStart].url === 'https://api.typesafe.ai/v1/systemone' &&
+      requests.at(-1).url === 'https://api.deepseek.com/chat/completions', 'uncertain JeV response did not fall back exactly once');
     jevUncertain = false;
     jevKeyInput.value = '';
     question(43, '单选题', choices('radio', ['A', 'B']));
@@ -509,6 +513,77 @@
     await app.detectAll();
     check(app.isAnswered(51) && requests.at(-1).url === 'https://api.typesafe.ai/v1/systemone' &&
       requests.at(-1).headers.Authorization === 'Bearer changed-jev-key', 'switching back lost the TypeSafe key or used the wrong channel');
+
+    let fallbackNumber = 52;
+    for (const provider of ['typesafe', 'openrouter']) {
+      providerInput.value = provider;
+      providerInput.dispatchEvent(new Event('change'));
+      const endpoint = provider === 'typesafe' ? 'https://api.typesafe.ai/v1/systemone' : 'https://openrouter.ai/api/alpha/decisions';
+      const providerKey = provider === 'typesafe' ? 'changed-jev-key' : 'changed-openrouter-key';
+      jevUncertain = true;
+      jevAnswers = ['A'];
+      for (const [type, form, answers] of [
+        ['单选题', choices('radio', ['A', 'B']), ['B']],
+        ['多选题', choices('checkbox', ['A', 'B', 'C']), ['A', 'C']],
+        ['判断题', choices('radio', ['true', 'false']), ['false']],
+      ]) {
+        const number = fallbackNumber++;
+        apiAnswers = answers;
+        question(number, type, form);
+        const before = requests.length;
+        await app.detectAll();
+        check(app.isAnswered(number) && answers.every(letter => document.querySelector(`input[value="${letter}"]`).checked),
+          `${provider} uncertain ${type} was skipped instead of using DeepSeek`);
+        check(requests.length === before + 2 && requests[before].url === endpoint && requests[before].headers.Authorization === `Bearer ${providerKey}` &&
+          requests.at(-1).url === 'https://api.deepseek.com/chat/completions' && requests.at(-1).headers.Authorization === 'Bearer changed-key',
+          `${provider} fallback used the wrong endpoint, credentials or request count`);
+        const body = JSON.parse(requests.at(-1).data);
+        check(body.model === 'deepseek-flash' && body.reasoning_effort === 'high' && body.messages[1].content.includes('测试题干'),
+          'fallback lost the question text or Flash High settings');
+        check(deepSeekSelections.at(-1).length === 0, 'uncertain JeV answers were applied before DeepSeek replied');
+      }
+      jevUncertain = false;
+      apiAnswers = ['A', 'C'];
+      const number = fallbackNumber++;
+      question(number, '多选题', choices('checkbox', ['A', 'B', 'C']));
+      const incompleteStart = requests.length;
+      await app.detectAll();
+      check(app.isAnswered(number) && requests.length === incompleteStart + 2 && requests.at(-1).url === 'https://api.deepseek.com/chat/completions',
+        `${provider} multi-choice with too few reliable answers was skipped`);
+    }
+    jevUncertain = true;
+    jevAnswers = null;
+    apiAnswers = ['B'];
+    question(60, '单选题', choices('radio', ['A', 'B']));
+    submitInput.checked = true;
+    submitInput.dispatchEvent(new Event('change'));
+    const failedFallbackSubmit = submissionControls();
+    deepSeekStatus = 503;
+    const failedFallbackStart = requests.length;
+    await app.detectAll();
+    check(requests.length === failedFallbackStart + 2 && !app.isAnswered(60) && !document.querySelector('#fixture input:checked') &&
+      failedFallbackSubmit.opened === 0, 'failed DeepSeek fallback applied an answer or submitted');
+    deepSeekStatus = null;
+    keyInput.value = '';
+    question(61, '单选题', choices('radio', ['A', 'B']));
+    const missingFallbackKey = requests.length;
+    const missingFallbackSubmit = submissionControls();
+    await app.detectAll();
+    check(requests.length === missingFallbackKey + 1 && !app.isAnswered(61) && missingFallbackSubmit.opened === 0,
+      'fallback without a DeepSeek key sent wrong credentials or submitted');
+    check([...document.querySelectorAll('.uplus-log-error')].some(line => line.textContent.includes('未设置 DeepSeek API Key，无法接管')),
+      'missing fallback key did not explain how to finish the question');
+    keyInput.value = 'changed-key';
+
+    const fallbackQueueStart = requests.length;
+    renderQueue(9);
+    await app.autoAnswer();
+    check(requests.length === fallbackQueueStart + 3 && requests[fallbackQueueStart].url === 'https://openrouter.ai/api/alpha/decisions' &&
+      requests[fallbackQueueStart + 1].url === 'https://api.deepseek.com/chat/completions' && requests.at(-1).url === 'https://api.deepseek.com/chat/completions' &&
+      queueSubmit.confirmed === 1, 'automatic mode skipped or failed to submit after a successful fallback');
+    jevUncertain = false;
+    submitInput.checked = false;
+    submitInput.dispatchEvent(new Event('change'));
     jevInput.checked = false;
     jevInput.dispatchEvent(new Event('change'));
     check(requests.every(request => ['https://api.deepseek.com/chat/completions', 'https://api.typesafe.ai/v1/systemone', 'https://openrouter.ai/api/alpha/decisions'].includes(request.url)),
