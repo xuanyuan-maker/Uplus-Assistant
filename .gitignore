@@ -1,0 +1,9 @@
+# 题库服务器 — 不公开
+bank-server/
+
+# 临时文件
+temp
+
+# Python
+__pycache__/
+*.pyc
